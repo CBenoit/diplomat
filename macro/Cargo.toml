@@ -23,6 +23,7 @@ diplomat_core = { path = "../core", version = "0.5.2" }
 syn = { version = "2.0", features = [ "full", "extra-traits" ] }
 quote = "1.0"
 proc-macro2 = "1.0.27"
+lazy_static = "1"
 
 [dev-dependencies]
 insta = "1.7.1"

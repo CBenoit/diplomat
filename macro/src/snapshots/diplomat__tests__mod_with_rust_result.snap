@@ -11,8 +11,8 @@ mod ffi {
         }
     }
     #[no_mangle]
-    extern "C" fn Foo_bar(this: &Foo) -> diplomat_runtime::DiplomatResult<(), ()> {
-        this.bar().into()
+    extern "C" fn Foo_bar(this: &Foo) -> Box<diplomat_runtime::DiplomatResult<(), ()>> {
+        Box::new(this.bar().into())
     }
     #[no_mangle]
     extern "C" fn Foo_destroy(this: Box<Foo>) {}
