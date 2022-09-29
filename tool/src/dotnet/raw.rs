@@ -35,6 +35,30 @@ pub fn gen_header(library_config: &LibraryConfig, out: &mut CodeWriter) -> fmt::
     Ok(())
 }
 
+pub fn gen_native_lib_dec(library_config: &LibraryConfig, out: &mut CodeWriter) -> fmt::Result {
+    out.dedent();
+    writeln!(out, "#if __IOS__")?;
+    out.indent();
+    writeln!(
+        out,
+        "private const string NativeLib = \"lib{}.framework/lib{}\";",
+        library_config.native_lib, library_config.native_lib
+    )?;
+    out.dedent();
+    writeln!(out, "#else")?;
+    out.indent();
+    writeln!(
+        out,
+        "private const string NativeLib = \"{}\";",
+        library_config.native_lib
+    )?;
+    out.dedent();
+    writeln!(out, "#endif")?;
+    out.indent();
+
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn gen<'ast>(
     env: &Env,
@@ -77,11 +101,7 @@ pub fn gen<'ast>(
             writeln!(out, "public partial struct {}", typ.name())?;
 
             out.scope(|out| {
-                writeln!(
-                    out,
-                    "private const string NativeLib = \"{}\";",
-                    library_config.native_lib
-                )?;
+                gen_native_lib_dec(library_config, out)?;
 
                 for (name, typ, doc) in strct.fields.iter() {
                     gen_field(name, doc, typ, in_path, env, docs_url_gen, out)?;
@@ -106,11 +126,7 @@ pub fn gen<'ast>(
             writeln!(out, "public partial struct {}", typ.name())?;
 
             out.scope(|out| {
-                writeln!(
-                    out,
-                    "private const string NativeLib = \"{}\";",
-                    library_config.native_lib
-                )?;
+                gen_native_lib_dec(library_config, out)?;
 
                 for method in typ.methods() {
                     gen_method(typ, method, in_path, env, docs_url_gen, out)?;
@@ -283,11 +299,7 @@ pub fn gen_result(
     writeln!(out, "public partial struct {res_name}")?;
 
     out.scope(|out| {
-        writeln!(
-            out,
-            "private const string NativeLib = \"{}\";",
-            library_config.native_lib
-        )?;
+        gen_native_lib_dec(library_config, out)?;
 
         // Omit variants or even the entire union if parts are zero-sized.
         // This matches what rustc effectively does with zero-sized union variants
