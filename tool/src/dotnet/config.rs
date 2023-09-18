@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
-pub struct LibraryConfig {
+pub struct BackendConfig {
     pub namespace: String,
     pub native_lib: String,
     #[serde(default)]
@@ -12,9 +12,9 @@ pub struct LibraryConfig {
     pub properties: PropertiesConfig,
 }
 
-impl LibraryConfig {
-    pub fn default() -> LibraryConfig {
-        LibraryConfig {
+impl BackendConfig {
+    pub fn default() -> BackendConfig {
+        BackendConfig {
             namespace: "Interop".to_owned(),
             native_lib: "rust".to_owned(),
             usings: Vec::new(),

@@ -1,132 +1,146 @@
-use std::collections::HashMap;
-use std::fmt;
-use std::fmt::Write;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
 use colored::*;
-use diplomat_core::Env;
+use diplomat_core::hir;
 
-use self::config::LibraryConfig;
-use crate::util::CodeWriter;
-use crate::util::SetOfAstTypes;
+use self::config::BackendConfig;
+use self::formatter::DotnetFormatter;
+use crate::common::FileMap;
 
 mod config;
-mod conversions;
-mod idiomatic;
+// mod conversions;
+mod formatter;
+// mod idiomatic;
 mod raw;
-mod types;
-mod util;
+mod runtime;
 
-static RUNTIME_CS: &str = include_str!("Runtime.cs");
+pub struct TypeStore<T> {
+    keys: BTreeSet<String>,
+    values: Vec<T>,
+}
 
-const INDENTATION: &str = "    ";
-const SCOPE_OPENING: &str = "{";
-const SCOPE_CLOSING: &str = "}";
+impl<T> Default for TypeStore<T> {
+    fn default() -> Self {
+        Self {
+            keys: BTreeSet::default(),
+            values: Vec::default(),
+        }
+    }
+}
 
-pub fn gen_bindings(
-    env: &Env,
-    library_config_path: Option<&Path>,
-    docs_url_gen: &diplomat_core::ast::DocsUrlGenerator,
-    outs: &mut HashMap<String, String>,
-) -> fmt::Result {
-    let mut library_config = LibraryConfig::default();
-    if let Some(path) = library_config_path {
-        // Should be fine, we've already verified the path
-        let contents = fs::read_to_string(path).unwrap();
-        match toml::from_str(&contents) {
-            Ok(config) => library_config = config,
-            Err(err) => {
-                eprintln!(
-                    "{} Unable to parse library configuration file: {path:?}\n{err}",
-                    "Error:".red().bold(),
-                );
-                std::process::exit(1);
-            }
+impl<T> TypeStore<T> {
+    pub fn insert(&mut self, name: String, value: T) {
+        if self.keys.insert(name) {
+            self.values.push(value);
         }
     }
 
-    let diplomat_runtime_out = outs.entry("DiplomatRuntime.cs".to_owned()).or_default();
-    write!(
-        diplomat_runtime_out,
-        "{}",
-        RUNTIME_CS.replace("{{NAMESPACE}}", &library_config.namespace)
-    )?;
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &T)> {
+        self.keys.iter().map(|s| s.as_str()).zip(self.values.iter())
+    }
+}
 
-    let all_types = crate::util::get_all_custom_types(env);
-    let mut errors = SetOfAstTypes::default();
+#[derive(Clone)]
+pub struct ResultType<'tcx> {
+    pub ok: Option<&'tcx hir::SuccessType>,
+    pub err: Option<&'tcx hir::OutType>,
+}
 
-    {
+pub struct DotnetContext<'tcx> {
+    pub files: FileMap,
+    pub backend_errors: crate::common::ErrorStore<'tcx, String>,
+
+    tcx: &'tcx hir::TypeContext,
+    fmt: DotnetFormatter<'tcx>,
+    config: BackendConfig,
+    result_store: TypeStore<ResultType<'tcx>>,
+    error_ty_store: TypeStore<&'tcx hir::OutType>,
+}
+
+impl<'tcx> DotnetContext<'tcx> {
+    pub fn new(
+        tcx: &'tcx hir::TypeContext,
+        docs_url_gen: &'tcx diplomat_core::ast::DocsUrlGenerator,
+        files: FileMap,
+        library_config_path: Option<&Path>,
+    ) -> Self {
+        let config = if let Some(path) = library_config_path {
+            // Should be fine, we've already verified the path
+            let contents = fs::read_to_string(path).unwrap();
+
+            match toml::from_str(&contents) {
+                Ok(config) => config,
+                Err(err) => {
+                    eprintln!(
+                        "{} Unable to parse library configuration file: {path:?}\n{err}",
+                        "Error:".red().bold(),
+                    );
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            BackendConfig::default()
+        };
+
+        Self {
+            files,
+            backend_errors: crate::common::ErrorStore::default(),
+
+            tcx,
+            fmt: DotnetFormatter::new(tcx, docs_url_gen),
+            config,
+            result_store: TypeStore::default(),
+            error_ty_store: TypeStore::default(),
+        }
+    }
+
+    pub fn run(&mut self) {
+        self.gen_runtime();
+
         // Raw API generation pass
 
-        let mut results = SetOfAstTypes::default();
-
-        for (in_path, typ) in &all_types {
-            let mut out_buf = String::new();
-            let mut out = CodeWriter::new(&mut out_buf, INDENTATION, SCOPE_OPENING, SCOPE_CLOSING);
-            raw::gen_header(&library_config, &mut out)?;
-            raw::gen(
-                env,
-                &library_config,
-                &mut results,
-                &mut errors,
-                typ,
-                in_path,
-                docs_url_gen,
-                &mut out,
-            )?;
-
-            if outs
-                .insert(format!("Raw{}.cs", typ.name()), out_buf)
-                .is_some()
-            {
-                panic!("file created twice: Raw{}.cs", typ.name())
-            }
+        for (id, ty) in self.tcx.all_types() {
+            self.raw_gen_ty(id, ty);
         }
 
-        for (in_path, typ) in results {
-            let result_name = types::gen_type_name_to_string(typ, &in_path, env)?;
-            let mut out_buf = String::new();
-            let mut out = CodeWriter::new(&mut out_buf, INDENTATION, SCOPE_OPENING, SCOPE_CLOSING);
-            raw::gen_header(&library_config, &mut out)?;
-            raw::gen_result(typ, &in_path, env, &mut out)?;
+        for (name, result) in self.result_store.iter() {
+            self.raw_gen_result(name, result);
 
-            if outs
-                .insert(format!("Raw{result_name}.cs"), out_buf)
-                .is_some()
-            {
-                panic!("file created twice: Raw{}.cs", result_name)
-            }
+            // for (in_path, typ) in results {
+            //     let result_name = types::gen_type_name_to_string(typ, &in_path, env)?;
+            //     let mut out_buf = String::new();
+            //     let mut out =
+            //         CodeWriter::new(&mut out_buf, INDENTATION, SCOPE_OPENING, SCOPE_CLOSING);
+            //     raw::gen_result(typ, &in_path, env, &mut out)?;
+            //     outs.insert(format!("Raw{result_name}.cs"), out_buf)
+            //         .and_then::<String, _>(|_| panic!("file created twice: Raw{}.cs", result_name));
+            // }
         }
-    }
 
-    {
         // Idiomatic API generation pass
 
-        for (in_path, typ) in &all_types {
-            let mut out_buf = String::new();
-            let mut out = CodeWriter::new(&mut out_buf, INDENTATION, SCOPE_OPENING, SCOPE_CLOSING);
-            idiomatic::gen_header(&library_config, &mut out)?;
-            idiomatic::gen(typ, in_path, env, &library_config, docs_url_gen, &mut out)?;
+        for (id, ty) in self.tcx.all_types() {
+            // TODO: self.idiomatic_gen_ty(id, ty);
 
-            if outs.insert(format!("{}.cs", typ.name()), out_buf).is_some() {
-                panic!("file created twice: {}.cs", typ.name())
-            }
+            // let mut out_buf = String::new();
+            // let mut out = CodeWriter::new(&mut out_buf, INDENTATION, SCOPE_OPENING, SCOPE_CLOSING);
+            // idiomatic::gen(typ, in_path, env, &library_config, docs_url_gen, &mut out)?;
+            // outs.insert(format!("{}.cs", typ.name()), out_buf)
+            //     .and_then::<String, _>(|_| panic!("file created twice: {}.cs", typ.name()));
         }
 
-        for (in_path, typ) in errors {
-            let idiomatic::ExceptionCtx { name, .. } =
-                idiomatic::error_type_to_exception_name(env, &library_config, typ, &in_path)?;
-            let mut out_buf = String::new();
-            let mut out = CodeWriter::new(&mut out_buf, INDENTATION, SCOPE_OPENING, SCOPE_CLOSING);
-            idiomatic::gen_header(&library_config, &mut out)?;
-            idiomatic::gen_exception(env, &library_config, typ, &in_path, &mut out)?;
+        for (name, error_ty) in self.error_ty_store.iter() {
+            // TODO: self.idiomatic_gen_exception(name, error_ty);
 
-            if outs.insert(format!("{name}.cs"), out_buf).is_some() {
-                panic!("file created twice: {}.cs", name)
-            }
+            // let idiomatic::ExceptionCtx { name, .. } =
+            //     idiomatic::error_type_to_exception_name(env, &library_config, typ, &in_path)?;
+            // let mut out_buf = String::new();
+            // let mut out = CodeWriter::new(&mut out_buf, INDENTATION, SCOPE_OPENING, SCOPE_CLOSING);
+            // idiomatic::gen_exception(env, &library_config, typ, &in_path, &mut out)?;
+            // outs.insert(format!("{name}.cs"), out_buf)
+            //     .and_then::<String, _>(|_| panic!("file created twice: {}.cs", name));
         }
     }
-
-    Ok(())
 }

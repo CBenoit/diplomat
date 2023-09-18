@@ -1,5 +1,3 @@
-use core::fmt;
-use core::fmt::Write as _;
 use core::hash::Hash;
 
 use diplomat_core::{ast, Env};
@@ -14,97 +12,6 @@ pub fn get_all_custom_types(env: &Env) -> SetOfAstTypes<&ast::CustomType> {
     }
 
     all_types
-}
-
-pub struct CodeWriter<'io> {
-    writer: &'io mut dyn fmt::Write,
-    ind_level: usize,
-    indentation: &'static str,
-    scope_opening: &'static str,
-    scope_closing: &'static str,
-    is_indented: bool,
-}
-
-impl<'io> CodeWriter<'io> {
-    pub fn new(
-        writer: &'io mut dyn fmt::Write,
-        indentation: &'static str,
-        scope_opening: &'static str,
-        scope_closing: &'static str,
-    ) -> Self {
-        Self {
-            writer,
-            ind_level: 0,
-            indentation,
-            scope_opening,
-            scope_closing,
-            is_indented: false,
-        }
-    }
-
-    pub fn indent(&mut self) {
-        self.ind_level += 1;
-    }
-
-    pub fn dedent(&mut self) {
-        self.ind_level -= 1;
-    }
-
-    pub fn scope<F>(&mut self, func: F) -> fmt::Result
-    where
-        F: FnOnce(&mut CodeWriter<'_>) -> fmt::Result,
-    {
-        let scope_opening = self.scope_opening;
-        writeln!(self, "{scope_opening}")?;
-        self.indent();
-
-        func(self)?;
-
-        self.dedent();
-        let scope_closing = self.scope_closing;
-        writeln!(self, "{scope_closing}")?;
-
-        Ok(())
-    }
-}
-
-impl fmt::Write for CodeWriter<'_> {
-    fn write_str(&mut self, mut input: &str) -> fmt::Result {
-        loop {
-            let next_line_break_idx = input.find('\n');
-
-            if !self.is_indented {
-                let should_indent = match next_line_break_idx {
-                    Some(idx) => !input[..idx].is_empty(),
-                    None => !input.is_empty(),
-                };
-                if should_indent {
-                    for _ in 0..self.ind_level {
-                        self.writer.write_str(self.indentation)?;
-                    }
-                }
-                self.is_indented = true;
-            }
-
-            match next_line_break_idx {
-                Some(idx) => {
-                    self.writer.write_str(&input[..idx + 1])?;
-                    input = &input[idx + 1..];
-                    self.is_indented = false;
-                }
-                None => {
-                    self.writer.write_str(input)?;
-                    input = "";
-                }
-            }
-
-            if input.is_empty() {
-                break;
-            }
-        }
-
-        Ok(())
-    }
 }
 
 type AstElement<T> = (ast::Path, T);

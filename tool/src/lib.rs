@@ -117,7 +117,40 @@ pub fn gen(
             cpp::gen_bindings(&env, library_config, docs_url_gen, &mut out_texts).unwrap()
         }
         "dotnet" => {
-            dotnet::gen_bindings(&env, library_config, docs_url_gen, &mut out_texts).unwrap()
+            let mut attr_validator = hir::BasicAttributeValidator::new(target_language);
+            attr_validator.support.renaming = true;
+            attr_validator.support.disabling = true;
+
+            let tcx = match hir::TypeContext::from_ast(&env, attr_validator) {
+                Ok(context) => context,
+                Err(e) => {
+                    for err in e {
+                        eprintln!("Lowering error: {err}");
+                    }
+                    std::process::exit(1);
+                }
+            };
+
+            let files = common::FileMap::default();
+
+            let mut context =
+                dotnet::DotnetContext::new(&tcx, &docs_url_gen, files, library_config);
+
+            context.run();
+
+            // dotnet::gen_bindings(&env, &opt.library_config, &docs_url_gen, &mut out_texts).unwrap()
+
+            let errors = context.backend_errors.take_all();
+
+            if !errors.is_empty() {
+                eprintln!("Found errors whilst generating {target_language}:");
+                for error in errors {
+                    eprintln!("\t{}: {}", error.0, error.1);
+                }
+                errors_found = true;
+            }
+
+            out_texts = context.files.take_files();
         }
         "c2" | "cpp-c2" | "cpp2" => {
             let mut attr_validator = hir::BasicAttributeValidator::new(target_language);
